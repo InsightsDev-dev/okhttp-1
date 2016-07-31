@@ -21,6 +21,7 @@ import java.net.ProxySelector;
 import java.net.Socket;
 import java.util.Collections;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Logger;
 import javax.net.SocketFactory;
 import okhttp3.internal.Internal;
 import okhttp3.internal.RecordingOkAuthenticator;
@@ -28,6 +29,7 @@ import okhttp3.internal.connection.RealConnection;
 import okhttp3.internal.connection.StreamAllocation;
 import org.junit.Test;
 
+import static okhttp3.TestUtil.awaitGarbageCollection;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -82,7 +84,7 @@ public final class ConnectionPoolTest {
 
     RealConnection c1 = newConnection(pool, routeA1, 50L);
     synchronized (pool) {
-      StreamAllocation streamAllocation = new StreamAllocation(pool, addressA);
+      StreamAllocation streamAllocation = new StreamAllocation(pool, addressA, null);
       streamAllocation.acquire(c1);
     }
 
@@ -161,34 +163,42 @@ public final class ConnectionPoolTest {
   @Test public void leakedAllocation() throws Exception {
     ConnectionPool pool = new ConnectionPool(2, 100L, TimeUnit.NANOSECONDS);
     pool.cleanupRunning = true; // Prevent the cleanup runnable from being started.
+    Logger logger = Logger.getLogger(OkHttpClient.class.getName());
+    TestLogHandler logHandler = new TestLogHandler();
+    logger.addHandler(logHandler);
 
-    RealConnection c1 = newConnection(pool, routeA1, 0L);
-    allocateAndLeakAllocation(pool, c1);
+    try {
+      RealConnection c1 = newConnection(pool, routeA1, 0L);
+      allocateAndLeakAllocation(pool, c1);
 
-    awaitGarbageCollection();
-    assertEquals(0L, pool.cleanup(100L));
-    assertEquals(Collections.emptyList(), c1.allocations);
+      awaitGarbageCollection();
+      assertEquals(0L, pool.cleanup(100L));
+      assertEquals(Collections.emptyList(), c1.allocations);
 
-    assertTrue(c1.noNewStreams); // Can't allocate once a leak has been detected.
+      assertTrue(c1.noNewStreams); // Can't allocate once a leak has been detected.
+
+      String message = logHandler.take();
+      String[] lines = message.split(System.getProperty("line.separator"));
+      assertEquals("okhttp.OkHttp.method3(OkhttpFile:121)", lines[1]);
+      assertEquals("okhttp.OkHttp.method2(OkHttpFile:21)", lines[2]);
+      assertEquals("okhttp.OkHttp.method1(OkHttpFile:12)", lines[3]);
+    } finally {
+      logger.removeHandler(logHandler);
+    }
   }
 
   /** Use a helper method so there's no hidden reference remaining on the stack. */
   private void allocateAndLeakAllocation(ConnectionPool pool, RealConnection connection) {
+    StackTraceElement[] fakeStackTrace = new StackTraceElement[] {
+        new StackTraceElement("okhttp.OkHttp", "method3", "OkhttpFile", 121),
+        new StackTraceElement("okhttp.OkHttp", "method2", "OkHttpFile", 21),
+        new StackTraceElement("okhttp.OkHttp", "method1", "OkHttpFile", 12)
+    };
     synchronized (pool) {
-      StreamAllocation leak = new StreamAllocation(pool, connection.route().address());
+      StreamAllocation leak = new StreamAllocation(
+          pool, connection.route().address(), fakeStackTrace);
       leak.acquire(connection);
     }
-  }
-
-  /**
-   * See FinalizationTester for discussion on how to best trigger GC in tests.
-   * https://android.googlesource.com/platform/libcore/+/master/support/src/test/java/libcore/
-   * java/lang/ref/FinalizationTester.java
-   */
-  private void awaitGarbageCollection() throws InterruptedException {
-    Runtime.getRuntime().gc();
-    Thread.sleep(100);
-    System.runFinalization();
   }
 
   private RealConnection newConnection(ConnectionPool pool, Route route, long idleAtNanos) {

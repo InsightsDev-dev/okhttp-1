@@ -55,6 +55,7 @@ final class RealCall implements Call {
       if (executed) throw new IllegalStateException("Already Executed");
       executed = true;
     }
+    captureCallStackTrace();
     try {
       client.dispatcher().executed(this);
       Response result = getResponseWithInterceptorChain();
@@ -63,6 +64,16 @@ final class RealCall implements Call {
     } finally {
       client.dispatcher().finished(this);
     }
+  }
+
+  private void captureCallStackTrace() {
+    StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+    int lastFrameToKeep = Math.min(10, stackTrace.length);
+    int framesToIgnore = 2;
+    StackTraceElement[] callStackTrace = new StackTraceElement[lastFrameToKeep - framesToIgnore];
+    System.arraycopy(
+        stackTrace, framesToIgnore, callStackTrace, 0, lastFrameToKeep - framesToIgnore);
+    retryAndFollowUpInterceptor.setCallStackTrace(callStackTrace);
   }
 
   synchronized void setForWebSocket() {
@@ -75,6 +86,7 @@ final class RealCall implements Call {
       if (executed) throw new IllegalStateException("Already Executed");
       executed = true;
     }
+    captureCallStackTrace();
     client.dispatcher().enqueue(new AsyncCall(responseCallback));
   }
 

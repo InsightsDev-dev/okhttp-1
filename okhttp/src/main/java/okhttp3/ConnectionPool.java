@@ -246,8 +246,18 @@ public final class ConnectionPool {
       }
 
       // We've discovered a leaked allocation. This is an application bug.
-      Platform.get().log(WARN, "A connection to " + connection.route().address().url()
-          + " was leaked. Did you forget to close a response body?", null);
+      StreamAllocation.StreamAllocationReference streamAllocRef =
+          (StreamAllocation.StreamAllocationReference) reference;
+      String lineSeparator = System.getProperty("line.separator");
+      StringBuilder message = new StringBuilder()
+          .append("A connection to ")
+          .append(connection.route().address().url())
+          .append(" was leaked. Did you forget to close a response body?")
+          .append(lineSeparator);
+      for (StackTraceElement element : streamAllocRef.callStackTrace) {
+        message.append(element.toString()).append(lineSeparator);
+      }
+      Platform.get().log(WARN, message.toString(), null);
       references.remove(i);
       connection.noNewStreams = true;
 
