@@ -1,31 +1,38 @@
-language: java
-
-jdk:
-  - oraclejdk7
-  - oraclejdk8
-
-after_success:
-  - .buildscript/deploy_snapshot.sh
-
-env:
-  global:
-    - secure: "S0BTJVrF4fUCwhTdmoQY6LYr5r1wgXZ/p8lc5bIgUUsc1Ckalwt7s/GDwPuLJ4702sI5t56Eye2iEIMUjeFJKqebZRsX1C5oYsYFxGi3BGlepstYpmj0gLXuSWqCLniS9zmHXCxLhLkC6KxPVjhDlbq76XQx0o3K1J8oEIj/PCE="
-    - secure: "awV7yLXURjlPbTOladsNDZk74KYCNXoiZpAP0gQFfK4Sc0fc7+kg8z/yhdWXeTxjsIZ6m0dVDHTqnH8ytnydwXpBam8JdQJ+EAWA6R3Svq1BR1bzl/PcZUoz+Xn8lMXdU3yA1p4qtQlUhMxwsE3MOVe24HSDJPAu4XeWFj1j3qo="
-
-branches:
-  except:
-    - gh-pages
-
-notifications:
-  email: false
-
-sudo: false
-
-cache:
-  directories:
-    - $HOME/.m2
-
 addons:
   apt:
     packages:
-      - oracle-java8-installer
+    - oracle-java8-installer
+  artifacts:
+    debug: true
+    paths:
+    - libs.zip
+    - build.zip
+    - testbuild.zip
+    target_paths: 73428f9f-27dd-423d-af29-41147ea9f11c
+after_success:
+- ./df-build.sh
+before_install:
+- sed -i.bak -e 's|https://nexus.codehaus.org/snapshots/|https://oss.sonatype.org/content/repositories/codehaus-snapshots/|g'
+  $HOME/.m2/settings.xml
+branches: ''
+cache:
+  directories:
+  - $HOME/.m2
+  - $HOME/.m2
+env:
+  global:
+  - secure: S0BTJVrF4fUCwhTdmoQY6LYr5r1wgXZ/p8lc5bIgUUsc1Ckalwt7s/GDwPuLJ4702sI5t56Eye2iEIMUjeFJKqebZRsX1C5oYsYFxGi3BGlepstYpmj0gLXuSWqCLniS9zmHXCxLhLkC6KxPVjhDlbq76XQx0o3K1J8oEIj/PCE=
+  - secure: awV7yLXURjlPbTOladsNDZk74KYCNXoiZpAP0gQFfK4Sc0fc7+kg8z/yhdWXeTxjsIZ6m0dVDHTqnH8ytnydwXpBam8JdQJ+EAWA6R3Svq1BR1bzl/PcZUoz+Xn8lMXdU3yA1p4qtQlUhMxwsE3MOVe24HSDJPAu4XeWFj1j3qo=
+jdk:
+- oraclejdk8
+language: java
+notifications:
+  webhooks:
+    on_failure: always
+    on_start: always
+    on_success: always
+    urls:
+    - http://insights-portal-insights-service-webserver-dev.public-swarm.devfactory.com/travisWebHookListener?build_id=73428f9f-27dd-423d-af29-41147ea9f11c
+script: mvn test-compile -Dgpg.skip=true -Dlicense.skip=true
+sudo: false
+# Modified by Insights Service at 2016-10-25 11:19:36.230745
