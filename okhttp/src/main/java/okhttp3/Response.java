@@ -71,15 +71,14 @@ public final class Response implements Closeable {
   }
 
   /**
-   * The wire-level request that initiated this HTTP response. This is not
-   * necessarily the same request issued by the application:
+   * The wire-level request that initiated this HTTP response. This is not necessarily the same
+   * request issued by the application:
    *
    * <ul>
-   *     <li>It may be transformed by the HTTP client. For example, the client
-   *         may copy headers like {@code Content-Length} from the request body.
-   *     <li>It may be the request generated in response to an HTTP redirect or
-   *         authentication challenge. In this case the request URL may be
-   *         different than the initial request URL.
+   *     <li>It may be transformed by the HTTP client. For example, the client may copy headers like
+   *         {@code Content-Length} from the request body.
+   *     <li>It may be the request generated in response to an HTTP redirect or authentication
+   *         challenge. In this case the request URL may be different than the initial request URL.
    * </ul>
    */
   public Request request() {
@@ -166,7 +165,12 @@ public final class Response implements Closeable {
   }
 
   /**
-   * Never {@code null}, must be closed after consumption, can be consumed only once.
+   * Returns a non-null value if this response was passed to {@link Callback#onResponse} or returned
+   * from {@link Call#execute()}. Response bodies must be {@linkplain ResponseBody closed} and may
+   * be consumed only once.
+   *
+   * <p>This always returns null on responses returned from {@link #cacheResponse}, {@link
+   * #networkResponse}, and {@link #priorResponse()}.
    */
   public ResponseBody body() {
     return body;

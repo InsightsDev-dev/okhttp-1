@@ -365,7 +365,7 @@ public final class HttpUrl {
    *     <li>Whitespace and control characters in the fragment will be stripped.
    * </ul>
    *
-   * <p>These differences may have a significant consequence when the URI is interpretted by a
+   * <p>These differences may have a significant consequence when the URI is interpreted by a
    * webserver. For this reason the {@linkplain URI URI class} and this method should be avoided.
    */
   public URI uri() {
@@ -839,6 +839,17 @@ public final class HttpUrl {
    */
   public String fragment() {
     return fragment;
+  }
+
+  /**
+   * Returns the HttpUrl with the username, password, path, query, and fragment stripped.
+   * Example: http://username:password@example.com/path returns http://example.com/...
+   */
+  public HttpUrl redact() {
+    Builder builder = newBuilder("/...");
+    builder.username("");
+    builder.password("");
+    return builder.build();
   }
 
   /**
@@ -1715,8 +1726,10 @@ public final class HttpUrl {
   }
 
   private List<String> percentDecode(List<String> list, boolean plusIsSpace) {
-    List<String> result = new ArrayList<>(list.size());
-    for (String s : list) {
+    int size = list.size();
+    List<String> result = new ArrayList<>(size);
+    for (int i = 0; i < size; i++) {
+      String s = list.get(i);
       result.add(s != null ? percentDecode(s, plusIsSpace) : null);
     }
     return Collections.unmodifiableList(result);

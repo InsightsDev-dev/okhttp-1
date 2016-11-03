@@ -41,6 +41,7 @@ import javax.net.ssl.SSLSession;
 import okhttp3.internal.Internal;
 import okhttp3.internal.Util;
 import okhttp3.internal.io.InMemoryFileSystem;
+import okhttp3.internal.platform.Platform;
 import okhttp3.internal.tls.SslClient;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -55,6 +56,7 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 
+import static okhttp3.TestUtil.defaultClient;
 import static okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_END;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -82,7 +84,7 @@ public final class CacheTest {
   @Before public void setUp() throws Exception {
     server.setProtocolNegotiationEnabled(false);
     cache = new Cache(new File("/cache/"), Integer.MAX_VALUE, fileSystem);
-    client = new OkHttpClient.Builder()
+    client = defaultClient().newBuilder()
         .cache(cache)
         .cookieJar(new JavaNetCookieJar(cookieManager))
         .build();
@@ -1030,6 +1032,10 @@ public final class CacheTest {
   }
 
   @Test public void conditionalCacheHitIsNotDoublePooled() throws Exception {
+    // Ensure that the (shared) connection pool is in a consistent state.
+    client.connectionPool().evictAll();
+    assertEquals(0, client.connectionPool().idleConnectionCount());
+
     server.enqueue(new MockResponse()
         .addHeader("ETag: v1")
         .setBody("A"));
@@ -1833,21 +1839,29 @@ public final class CacheTest {
     server.enqueue(new MockResponse()
         .setBody("B"));
 
-    // cache miss; seed the cache
+    // A cache miss writes the cache.
+    long t0 = System.currentTimeMillis();
     Response response1 = get(server.url("/a"));
     assertEquals("A", response1.body().string());
     assertEquals(null, response1.header("Allow"));
+    assertEquals(0, response1.receivedResponseAtMillis() - t0, 250.0);
 
-    // conditional cache hit; update the cache
+    // A conditional cache hit updates the cache.
+    Thread.sleep(500); // Make sure t0 and t1 are distinct.
+    long t1 = System.currentTimeMillis();
     Response response2 = get(server.url("/a"));
     assertEquals(HttpURLConnection.HTTP_OK, response2.code());
     assertEquals("A", response2.body().string());
     assertEquals("GET, HEAD", response2.header("Allow"));
+    assertEquals(0, response2.receivedResponseAtMillis() - t1, 250.0);
 
-    // full cache hit
+    // A full cache hit reads the cache.
+    Thread.sleep(500); // Make sure t1 and t2 are distinct.
+    long t2 = System.currentTimeMillis();
     Response response3 = get(server.url("/a"));
     assertEquals("A", response3.body().string());
     assertEquals("GET, HEAD", response3.header("Allow"));
+    assertEquals(0, response3.receivedResponseAtMillis() - t1, 250.0);
 
     assertEquals(2, server.getRequestCount());
   }
@@ -1980,6 +1994,7 @@ public final class CacheTest {
   @Test public void testGoldenCacheHttpsResponseOkHttp27() throws Exception {
     HttpUrl url = server.url("/");
     String urlKey = Util.md5Hex(url.toString());
+    String prefix = Platform.get().getPrefix();
     String entryMetadata = ""
         + "" + url + "\n"
         + "GET\n"
@@ -1987,8 +2002,8 @@ public final class CacheTest {
         + "HTTP/1.1 200 OK\n"
         + "4\n"
         + "Content-Length: 3\n"
-        + "OkHttp-Received-Millis: " + System.currentTimeMillis() + "\n"
-        + "OkHttp-Sent-Millis: " + System.currentTimeMillis() + "\n"
+        + prefix + "-Received-Millis: " + System.currentTimeMillis() + "\n"
+        + prefix + "-Sent-Millis: " + System.currentTimeMillis() + "\n"
         + "Cache-Control: max-age=60\n"
         + "\n"
         + "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256\n"
@@ -2028,6 +2043,7 @@ public final class CacheTest {
   @Test public void testGoldenCacheHttpsResponseOkHttp30() throws Exception {
     HttpUrl url = server.url("/");
     String urlKey = Util.md5Hex(url.toString());
+    String prefix = Platform.get().getPrefix();
     String entryMetadata = ""
         + "" + url + "\n"
         + "GET\n"
@@ -2035,8 +2051,8 @@ public final class CacheTest {
         + "HTTP/1.1 200 OK\n"
         + "4\n"
         + "Content-Length: 3\n"
-        + "OkHttp-Received-Millis: " + System.currentTimeMillis() + "\n"
-        + "OkHttp-Sent-Millis: " + System.currentTimeMillis() + "\n"
+        + prefix + "-Received-Millis: " + System.currentTimeMillis() + "\n"
+        + prefix + "-Sent-Millis: " + System.currentTimeMillis() + "\n"
         + "Cache-Control: max-age=60\n"
         + "\n"
         + "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256\n"
@@ -2076,6 +2092,7 @@ public final class CacheTest {
   @Test public void testGoldenCacheHttpResponseOkHttp30() throws Exception {
     HttpUrl url = server.url("/");
     String urlKey = Util.md5Hex(url.toString());
+    String prefix = Platform.get().getPrefix();
     String entryMetadata = ""
         + "" + url + "\n"
         + "GET\n"
@@ -2084,8 +2101,8 @@ public final class CacheTest {
         + "4\n"
         + "Cache-Control: max-age=60\n"
         + "Content-Length: 3\n"
-        + "OkHttp-Received-Millis: " + System.currentTimeMillis() + "\n"
-        + "OkHttp-Sent-Millis: " + System.currentTimeMillis() + "\n";
+        + prefix + "-Received-Millis: " + System.currentTimeMillis() + "\n"
+        + prefix + "-Sent-Millis: " + System.currentTimeMillis() + "\n";
     String entryBody = "abc";
     String journalBody = ""
         + "libcore.io.DiskLruCache\n"

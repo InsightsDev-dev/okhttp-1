@@ -33,6 +33,7 @@ import okhttp3.HttpUrl;
 import okhttp3.Interceptor;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
+import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.Route;
 import okhttp3.internal.connection.RouteException;
@@ -61,12 +62,14 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
   private static final int MAX_FOLLOW_UPS = 20;
 
   private final OkHttpClient client;
+  private final boolean forWebSocket;
   private StreamAllocation streamAllocation;
-  private boolean forWebSocket;
+  private Object callStackTrace;
   private volatile boolean canceled;
 
-  public RetryAndFollowUpInterceptor(OkHttpClient client) {
+  public RetryAndFollowUpInterceptor(OkHttpClient client, boolean forWebSocket) {
     this.client = client;
+    this.forWebSocket = forWebSocket;
   }
 
   /**
@@ -88,16 +91,8 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
     return canceled;
   }
 
-  public OkHttpClient client() {
-    return client;
-  }
-
-  public void setForWebSocket(boolean forWebSocket) {
-    this.forWebSocket = forWebSocket;
-  }
-
-  public boolean isForWebSocket() {
-    return forWebSocket;
+  public void setCallStackTrace(Object callStackTrace) {
+    this.callStackTrace = callStackTrace;
   }
 
   public StreamAllocation streamAllocation() {
@@ -108,7 +103,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
     Request request = chain.request();
 
     streamAllocation = new StreamAllocation(
-        client.connectionPool(), createAddress(request.url()));
+        client.connectionPool(), createAddress(request.url()), callStackTrace);
 
     int followUpCount = 0;
     Response priorResponse = null;
@@ -145,8 +140,8 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
       if (priorResponse != null) {
         response = response.newBuilder()
             .priorResponse(priorResponse.newBuilder()
-                .body(null)
-                .build())
+                    .body(null)
+                    .build())
             .build();
       }
 
@@ -167,13 +162,14 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
       }
 
       if (followUp.body() instanceof UnrepeatableRequestBody) {
+        streamAllocation.release();
         throw new HttpRetryException("Cannot retry streamed HTTP body", response.code());
       }
 
       if (!sameConnection(response, followUp.url())) {
         streamAllocation.release();
         streamAllocation = new StreamAllocation(
-            client.connectionPool(), createAddress(followUp.url()));
+            client.connectionPool(), createAddress(followUp.url()), callStackTrace);
       } else if (streamAllocation.codec() != null) {
         throw new IllegalStateException("Closing the body of " + response
             + " didn't close its backing stream. Bad interceptor?");
@@ -308,17 +304,21 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         boolean sameScheme = url.scheme().equals(userResponse.request().url().scheme());
         if (!sameScheme && !client.followSslRedirects()) return null;
 
-        // Redirects don't include a request body.
+        // Most redirects don't include a request body.
         Request.Builder requestBuilder = userResponse.request().newBuilder();
         if (HttpMethod.permitsRequestBody(method)) {
+          final boolean maintainBody = HttpMethod.redirectsWithBody(method);
           if (HttpMethod.redirectsToGet(method)) {
             requestBuilder.method("GET", null);
           } else {
-            requestBuilder.method(method, null);
+            RequestBody requestBody = maintainBody ? userResponse.request().body() : null;
+            requestBuilder.method(method, requestBody);
           }
-          requestBuilder.removeHeader("Transfer-Encoding");
-          requestBuilder.removeHeader("Content-Length");
-          requestBuilder.removeHeader("Content-Type");
+          if (!maintainBody) {
+            requestBuilder.removeHeader("Transfer-Encoding");
+            requestBuilder.removeHeader("Content-Length");
+            requestBuilder.removeHeader("Content-Type");
+          }
         }
 
         // When redirecting across hosts, drop all authentication headers. This

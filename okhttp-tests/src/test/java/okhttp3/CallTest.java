@@ -34,7 +34,9 @@ import java.security.cert.Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -45,7 +47,9 @@ import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.logging.SimpleFormatter;
 import javax.net.ServerSocketFactory;
 import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.SSLPeerUnverifiedException;
@@ -79,6 +83,7 @@ import org.junit.rules.TestRule;
 import org.junit.rules.Timeout;
 
 import static java.net.CookiePolicy.ACCEPT_ORIGINAL_SERVER;
+import static okhttp3.TestUtil.awaitGarbageCollection;
 import static okhttp3.TestUtil.defaultClient;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -229,6 +234,60 @@ public final class CallTest {
     assertNull(recordedRequest.getHeader("Content-Length"));
   }
 
+  @Test public void headResponseContentLengthIsIgnored() throws Exception {
+    server.enqueue(new MockResponse()
+        .clearHeaders()
+        .addHeader("Content-Length", "100"));
+    server.enqueue(new MockResponse()
+        .setBody("abc"));
+
+    Request headRequest = new Request.Builder()
+        .url(server.url("/"))
+        .head()
+        .build();
+    executeSynchronously(headRequest)
+        .assertCode(200)
+        .assertHeader("Content-Length", "100")
+        .assertBody("");
+
+    Request getRequest = new Request.Builder()
+        .url(server.url("/"))
+        .build();
+    executeSynchronously(getRequest)
+        .assertCode(200)
+        .assertBody("abc");
+
+    assertEquals(0, server.takeRequest().getSequenceNumber());
+    assertEquals(1, server.takeRequest().getSequenceNumber());
+  }
+
+  @Test public void headResponseContentEncodingIsIgnored() throws Exception {
+    server.enqueue(new MockResponse()
+        .clearHeaders()
+        .addHeader("Content-Encoding", "chunked"));
+    server.enqueue(new MockResponse()
+        .setBody("abc"));
+
+    Request headRequest = new Request.Builder()
+        .url(server.url("/"))
+        .head()
+        .build();
+    executeSynchronously(headRequest)
+        .assertCode(200)
+        .assertHeader("Content-Encoding", "chunked")
+        .assertBody("");
+
+    Request getRequest = new Request.Builder()
+        .url(server.url("/"))
+        .build();
+    executeSynchronously(getRequest)
+        .assertCode(200)
+        .assertBody("abc");
+
+    assertEquals(0, server.takeRequest().getSequenceNumber());
+    assertEquals(1, server.takeRequest().getSequenceNumber());
+  }
+
   @Test public void head_HTTPS() throws Exception {
     enableTls();
     head();
@@ -342,6 +401,7 @@ public final class CallTest {
 
     Response response = client.newCall(request).execute();
     assertEquals(200, response.code());
+    response.body().close();
 
     RecordedRequest recordedRequest1 = server.takeRequest();
     assertEquals("POST", recordedRequest1.getMethod());
@@ -601,8 +661,15 @@ public final class CallTest {
     Call cloned = call.clone();
     cloned.enqueue(callback);
 
-    callback.await(request.url()).assertBody("abc");
-    callback.await(request.url()).assertBody("def");
+    RecordedResponse firstResponse = callback.await(request.url()).assertSuccessful();
+    RecordedResponse secondResponse = callback.await(request.url()).assertSuccessful();
+
+    Set<String> bodies = new LinkedHashSet<>();
+    bodies.add(firstResponse.getBody());
+    bodies.add(secondResponse.getBody());
+
+    assertTrue(bodies.contains("abc"));
+    assertTrue(bodies.contains("def"));
   }
 
   @Test public void get_Async() throws Exception {
@@ -814,7 +881,7 @@ public final class CallTest {
 
   /** https://github.com/square/okhttp/issues/1801 */
   @Test public void asyncCallEngineInitialized() throws Exception {
-    OkHttpClient c = new OkHttpClient.Builder()
+    OkHttpClient c = defaultClient().newBuilder()
         .addInterceptor(new Interceptor() {
           @Override public Response intercept(Chain chain) throws IOException {
             throw new IOException();
@@ -1236,7 +1303,7 @@ public final class CallTest {
         .build();
 
     // Store a response in the cache.
-    long request1At = System.currentTimeMillis();
+    long request1SentAt = System.currentTimeMillis();
     executeSynchronously("/", "Accept-Language", "fr-CA", "Accept-Charset", "UTF-8")
         .assertCode(200)
         .assertHeader("Donut", "a")
@@ -1260,8 +1327,8 @@ public final class CallTest {
         .assertRequestHeader("Accept-Language", "en-US")
         .assertRequestHeader("Accept-Charset", "UTF-8")
         .assertRequestHeader("If-None-Match") // No If-None-Match on the user's request.
-        .assertSentRequestAtMillis(request1At, request1ReceivedAt)
-        .assertReceivedResponseAtMillis(request1At, request1ReceivedAt);
+        .assertSentRequestAtMillis(request2SentAt, request2ReceivedAt)
+        .assertReceivedResponseAtMillis(request2SentAt, request2ReceivedAt);
 
     // Check the cached response. Its request contains only the saved Vary headers.
     cacheHit.cacheResponse()
@@ -1272,8 +1339,8 @@ public final class CallTest {
         .assertRequestHeader("Accept-Language") // No Vary on Accept-Language.
         .assertRequestHeader("Accept-Charset", "UTF-8") // Because of Vary on Accept-Charset.
         .assertRequestHeader("If-None-Match") // This wasn't present in the original request.
-        .assertSentRequestAtMillis(request1At, request1ReceivedAt)
-        .assertReceivedResponseAtMillis(request1At, request1ReceivedAt);
+        .assertSentRequestAtMillis(request1SentAt, request1ReceivedAt)
+        .assertReceivedResponseAtMillis(request1SentAt, request1ReceivedAt);
 
     // Check the network response. It has the caller's request, plus some caching headers.
     cacheHit.networkResponse()
@@ -1503,17 +1570,21 @@ public final class CallTest {
     assertEquals("Hello", request2.getBody().readUtf8());
   }
 
-  @Test public void propfindRedirectsToPropfind() throws Exception {
+  @Test public void propfindRedirectsToPropfindAndMaintainsRequestBody() throws Exception {
+    // given
     server.enqueue(new MockResponse()
         .setResponseCode(HttpURLConnection.HTTP_MOVED_TEMP)
         .addHeader("Location: /page2")
         .setBody("This page has moved!"));
     server.enqueue(new MockResponse().setBody("Page 2"));
 
+    // when
     Response response = client.newCall(new Request.Builder()
         .url(server.url("/page1"))
         .method("PROPFIND", RequestBody.create(MediaType.parse("text/plain"), "Request Body"))
         .build()).execute();
+
+    // then
     assertEquals("Page 2", response.body().string());
 
     RecordedRequest page1 = server.takeRequest();
@@ -1522,6 +1593,7 @@ public final class CallTest {
 
     RecordedRequest page2 = server.takeRequest();
     assertEquals("PROPFIND /page2 HTTP/1.1", page2.getRequestLine());
+    assertEquals("Request Body", page2.getBody().readUtf8());
   }
 
   @Test public void responseCookies() throws Exception {
@@ -2277,8 +2349,8 @@ public final class CallTest {
   }
 
   /**
-   * OkHttp has a bug where a `Connection: close` response header is not honored when establishing
-   * a TLS tunnel. https://github.com/square/okhttp/issues/2426
+   * OkHttp has a bug where a `Connection: close` response header is not honored when establishing a
+   * TLS tunnel. https://github.com/square/okhttp/issues/2426
    */
   @Test public void proxyAuthenticateOnConnectWithConnectionClose() throws Exception {
     server.useHttps(sslClient.socketFactory, true);
@@ -2562,6 +2634,78 @@ public final class CallTest {
         .assertCode(200)
         .assertHeader("abc", "def")
         .assertBody("");
+  }
+
+  @Test public void leakedResponseBodyLogsStackTrace() throws Exception {
+    server.enqueue(new MockResponse()
+        .setBody("This gets leaked."));
+
+    client = defaultClient().newBuilder()
+        .connectionPool(new ConnectionPool(0, 10, TimeUnit.MILLISECONDS))
+        .build();
+
+    Request request = new Request.Builder()
+        .url(server.url("/"))
+        .build();
+
+    Level original = logger.getLevel();
+    logger.setLevel(Level.FINE);
+    logHandler.setFormatter(new SimpleFormatter());
+    try {
+      client.newCall(request).execute(); // Ignore the response so it gets leaked then GC'd.
+      awaitGarbageCollection();
+
+      String message = logHandler.take();
+      assertTrue(message.contains("WARNING: A connection to " + server.url("/") + " was leaked."
+          + " Did you forget to close a response body?"));
+      assertTrue(message.contains("okhttp3.RealCall.execute("));
+      assertTrue(message.contains("okhttp3.CallTest.leakedResponseBodyLogsStackTrace("));
+    } finally {
+      logger.setLevel(original);
+    }
+  }
+
+  @Test public void asyncLeakedResponseBodyLogsStackTrace() throws Exception {
+    server.enqueue(new MockResponse()
+        .setBody("This gets leaked."));
+
+    client = defaultClient().newBuilder()
+        .connectionPool(new ConnectionPool(0, 10, TimeUnit.MILLISECONDS))
+        .build();
+
+    Request request = new Request.Builder()
+        .url(server.url("/"))
+        .build();
+
+    Level original = logger.getLevel();
+    logger.setLevel(Level.FINE);
+    logHandler.setFormatter(new SimpleFormatter());
+    try {
+      final CountDownLatch latch = new CountDownLatch(1);
+      client.newCall(request).enqueue(new Callback() {
+        @Override public void onFailure(Call call, IOException e) {
+          fail();
+        }
+
+        @Override public void onResponse(Call call, Response response) throws IOException {
+          // Ignore the response so it gets leaked then GC'd.
+          latch.countDown();
+        }
+      });
+      latch.await();
+      // There's some flakiness when triggering a GC for objects in a separate thread. Adding a
+      // small delay appears to ensure the objects will get GC'd.
+      Thread.sleep(200);
+      awaitGarbageCollection();
+
+      String message = logHandler.take();
+      assertTrue(message.contains("WARNING: A connection to " + server.url("/") + " was leaked."
+          + " Did you forget to close a response body?"));
+      assertTrue(message.contains("okhttp3.RealCall.enqueue("));
+      assertTrue(message.contains("okhttp3.CallTest.asyncLeakedResponseBodyLogsStackTrace("));
+    } finally {
+      logger.setLevel(original);
+    }
   }
 
   private void makeFailingCall() {
